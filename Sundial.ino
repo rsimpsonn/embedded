@@ -58,6 +58,7 @@ void DecrementHour(){
   timezone_update_dec = true; // do not directly call VirtualStep within the interupt handler
 }
 
+// Setup wifi connection, start listening for timezone interrupts, initialize watchdog
 void setup() {
   // pin initializaton
   pinMode(inc_hour, INPUT);
@@ -101,6 +102,7 @@ void setup() {
   //test_all_tests();
 }
 
+// Generate a watchdog clock with a timeout period of about 4 seconds
 void initialize_watchdog() {
   
   NVIC_DisableIRQ(WDT_IRQn);
@@ -130,6 +132,7 @@ void initialize_watchdog() {
   Serial.println("Initialized WDT!");
 }
 
+// Reset watchdog
 void pet_watchdog() {
   WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
 }
@@ -140,6 +143,7 @@ typedef enum {
   REVERSE = 1
 } DIR; 
 
+// Move the clock one step forward or reverse, as determined by input dir
 void StepIndicator(int dir){
   int sign;
   if (dir == FORWARD){
@@ -182,44 +186,15 @@ int getTimePosition(){
   return time_position;
 }
 
-//void loop() {
-//  int time_pos = getTimePosition();
-//
-//  int numSteps = time_pos - StepperVirtPosition;
-//  Serial.println("starting long step");
-//  for (int i = 0; i < numSteps; i++) {
-//    VirtualStep(1);
-//    pet_watchdog();
-//  }
-////  Serial.println("started step");
-////  VirtualStep(time_pos - StepperVirtPosition);
-//  Serial.println("finished long step");
-//  
-//  //Serial.println(StepperVirtPosition);
-//  // Wait ~2 minutes, but check for time zone updates every second
-//  for (int i = 0; i < 120; i++){
-//    delay(1000);
-//    if (timezone_update){
-//      timezone_update = false;
-//      break;
-//    }
-//    pet_watchdog();
-//  }
-//
-//}
-
-
+// Handles watchdog warning
 void WDT_Handler() {
-  // TODO: Clear interrupt register flag
-  // (reference register with WDT->register_name.reg)
-
   Serial.println("warning!");
   WDT->INTFLAG.reg = 1;
-  
-  // TODO: Warn user that a watchdog reset may happen
+ 
 
 }
 
+// Set the brightness of the light based on potentiometer, then update the FSM and reset watchdog
 void loop() {
   //Serial.println(analogRead(potentiometer));
   analogWrite(light, map(analogRead(potentiometer), 0, 1024, 0, 255));
@@ -231,6 +206,7 @@ void loop() {
 }
 
 
+// Update FSM based on current state and inputs
 state update_fsm(state cur_state, long mils, bool cal_switch_on, bool inc_timezone, bool dec_timezone, int time_pos) {
   int position_difference = time_pos - StepperVirtPosition;
   state next_state;
@@ -245,39 +221,39 @@ state update_fsm(state cur_state, long mils, bool cal_switch_on, bool inc_timezo
   switch(cur_state) {
     case s_CALIBRATING:
       if (cal_switch_on) {
-        next_state = s_STEP;
+        next_state = s_STEP; // Transition 1-2: If we've reached 12 mark, start stepping to the correct time
       } else {
         clockStepper.step(1);
-        next_state = s_CALIBRATING;
+        next_state = s_CALIBRATING; // Transition 1-1: Continue calibrating if we have not reached 12 mark
       }
       break;
     case s_STEP:
       if (time_pos == StepperVirtPosition) {
-          next_state = s_WAITING;
+          next_state = s_WAITING; // Transition 2-3: If the clock step is at the correct position, stop stepping and wait for the next update
       } else if (abs(position_difference) <= (VirtSTEPS / 2)) {
           StepIndicator((position_difference > 0) ? FORWARD : REVERSE);
-          next_state = s_STEP;
+          next_state = s_STEP; // Transition 2-2: Step in the direction of the time difference if it is shortest path
       } else if (abs(position_difference) > (VirtSTEPS / 2)) {
           StepIndicator((position_difference < 0) ? FORWARD : REVERSE);
-          next_state = s_STEP;
+          next_state = s_STEP; // Transition 2-2: Step in the reverse direction of the time difference if it is shortest path
       }
       saved_clock = mils;
       break;
     case s_WAITING:
       if (mils - saved_clock >= 120000) {
-        next_state = s_STEP;
+        next_state = s_STEP; // Transition 3-2: If we've waited at least 2 minutes, get the time and update the clock
       } else if (inc_timezone) {
         hour_offset += 1;
         timeClient.setTimeOffset(hour_offset * 60 * 60);
         timezone_update_inc = false;
-        next_state = s_STEP;
+        next_state = s_STEP; // Transition 3-2: If we've received an increment timezone event, step to the updated timezone
       } else if (dec_timezone) {
         hour_offset -= 1;
         timeClient.setTimeOffset(hour_offset * 60 * 60);
         timezone_update_dec = false;
-        next_state = s_STEP;
+        next_state = s_STEP; // Transition 3-2: If we've received an decrement timezone event, step to the updated timezone
       } else {
-        next_state = s_WAITING;
+        next_state = s_WAITING; // Transition 3-3: Keep waiting if there's no signal to step
       }
       break;
   }
